@@ -28,7 +28,7 @@ fn export_macro_writes_lua_module() {
     let content = std::fs::read_to_string(&path).unwrap();
     assert!(content.contains("M.User = T.shape({"));
     assert!(content.contains("name = T.string,"));
-    assert!(content.contains("age = T.number,"));
+    assert!(content.contains("age = T.integer,"));
     assert!(content.contains("email = T.string:is_optional(),"));
     assert!(content.contains("M.Point = T.shape({"));
     assert!(content.ends_with("return M\n"));

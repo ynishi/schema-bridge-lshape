@@ -33,7 +33,7 @@ local M = {}
 
 M.User = T.shape({
     name = T.string,
-    age = T.number,
+    age = T.integer,
     email = T.string:is_optional(),
 })
 
@@ -57,29 +57,28 @@ Lower-level entry points: `schema_to_lshape(&Schema)` (single expression),
 | Schema IR | lshape |
 |---|---|
 | `String` / `Number` / `Boolean` / `Any` | `T.string` / `T.number` / `T.boolean` / `T.any` |
-| `Integer` | `T.number` (see limitations) |
+| `Integer` | `T.integer` (lshape 0.3+; whole-number check, `2.0` passes) |
 | `Array(T)` | `T.array_of(...)` |
 | `Record { key, value }` | `T.map_of(k, v)` |
 | `Object(fields)` | `T.shape({...})`, optional fields get `:is_optional()` |
 | `Enum(values)` | `T.one_of({...})` |
 | `Union(variants)` | `T.any_of({...})`; a `Null` variant is stripped and folded into `:is_optional()` |
-| `Tuple(items)` | `T.table` with a `tuple: [...]` describe (see limitations) |
+| `Tuple(items)` | `T.tuple({...})` (lshape 0.3+; fixed length, per-position schemas) |
 | `Ref(name)` | `T.ref("name")` |
 | `Constraints.one_of` | `T.one_of({...})` |
-| `Constraints` min/max/min_len/max_len | `:describe("min=... max=...")` doc text (see limitations) |
+| `Constraints` min/max/min_len/max_len | `:min(..)` / `:max(..)` / `:min_len(..)` / `:max_len(..)` (lshape 0.3+; enforced at check time) |
 
 A standalone `Schema::Null` (outside a union) is an error — lshape has no nil
-type; nullability is expressed with `:is_optional()`.
+type; nullability is expressed with `:is_optional()`. An empty `Tuple` is
+likewise an error (`T.tuple` requires at least one item; not reachable via
+the derive macro).
 
-## Known limitations
+## lshape version requirement
 
-lshape has no combinator for these IR features, so the mapping is lossy in a
-documented way — the information is preserved as `:describe(...)` doc text
-where possible, but is **not enforced at check time**:
+Generated modules use `T.integer` / `T.tuple` / the bounds combinators,
+which require **lshape 0.3.0+** at load time (vendored by
+[`mlua-lshape 0.3+`](https://crates.io/crates/mlua-lshape)).
 
-- `Integer` → `T.number`: integer-ness is not checked.
-- `Tuple` → `T.table`: element types survive only as doc text.
-- `min` / `max` / `min_len` / `max_len` constraints: doc text only.
-
-If lshape later gains `T.int` / `T.tuple` / numeric bound combinators, these
-mappings can tighten without changing this crate's API.
+Semantic note: `T.integer` is lshape's portable whole-number check
+(`v % 1 == 0`), so `2.0` passes; Rust-side integer *range* (e.g. `u8`) is
+not carried into the schema.

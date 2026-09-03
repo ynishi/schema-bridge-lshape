@@ -16,15 +16,15 @@
 //! assert!(lua_src.contains("M.User = T.shape({"));
 //! ```
 //!
-//! # Known limitations
+//! # lshape version requirement
 //!
-//! lshape has no combinator for the following IR features, so the mapping is
-//! lossy in a documented way (the information is preserved as `:describe(...)`
-//! doc text where possible, but is not enforced at check time):
+//! Generated modules use `T.integer` / `T.tuple` / the bounds combinators
+//! (`:min` / `:max` / `:min_len` / `:max_len`), which require
+//! **lshape 0.3.0+** at load time (vendored by `mlua-lshape 0.3+`).
 //!
-//! - `Schema::Integer` → `T.number` (integer-ness not checked)
-//! - `Schema::Tuple` → `T.table` with a `tuple: [...]` describe
-//! - `Constraints` `min` / `max` / `min_len` / `max_len` → describe text only
+//! Semantic note: lshape's `T.integer` is the portable whole-number check
+//! (`v % 1 == 0`), so `2.0` passes; Rust-side integer *range* (e.g. `u8`)
+//! is not carried into the schema.
 
 use schema_bridge_core::{Field, Schema};
 
@@ -37,6 +37,10 @@ pub enum LshapeError {
     StandaloneNull { path: String },
     /// `Schema::Union` whose only variant is `Null` (or which is empty).
     EmptyUnion { path: String },
+    /// `Schema::Tuple` with no elements — `T.tuple` requires at least one
+    /// item (unreachable via `#[derive(SchemaBridge)]`, which covers 1-6
+    /// element tuples only).
+    EmptyTuple { path: String },
 }
 
 impl std::fmt::Display for LshapeError {
@@ -50,6 +54,10 @@ impl std::fmt::Display for LshapeError {
             LshapeError::EmptyUnion { path } => write!(
                 f,
                 "union at `{path}` has no non-null variant to map to lshape"
+            ),
+            LshapeError::EmptyTuple { path } => write!(
+                f,
+                "tuple at `{path}` has no elements — lshape T.tuple requires at least one item"
             ),
         }
     }
@@ -138,8 +146,8 @@ macro_rules! export_lshape_types {
 fn expr(schema: &Schema, depth: usize, path: &str) -> Result<String, LshapeError> {
     match schema {
         Schema::String => Ok("T.string".to_string()),
-        // KNOWN LIMITATION: lshape has no integer type; integer-ness is lost.
-        Schema::Number | Schema::Integer => Ok("T.number".to_string()),
+        Schema::Number => Ok("T.number".to_string()),
+        Schema::Integer => Ok("T.integer".to_string()),
         Schema::Boolean => Ok("T.boolean".to_string()),
         Schema::Any => Ok("T.any".to_string()),
         Schema::Null => Err(LshapeError::StandaloneNull {
@@ -157,13 +165,17 @@ fn expr(schema: &Schema, depth: usize, path: &str) -> Result<String, LshapeError
         Schema::Enum(values) => Ok(one_of_expr(values)),
         Schema::Union(variants) => union_expr(variants, depth, path),
         Schema::Tuple(items) => {
-            // KNOWN LIMITATION: lshape has no tuple type; the element list is
-            // preserved as doc text only.
-            let labels: Vec<&str> = items.iter().map(Schema::type_name).collect();
-            Ok(format!(
-                "T.table:describe(\"tuple: [{}]\")",
-                labels.join(", ")
-            ))
+            if items.is_empty() {
+                return Err(LshapeError::EmptyTuple {
+                    path: path.to_string(),
+                });
+            }
+            let exprs = items
+                .iter()
+                .enumerate()
+                .map(|(i, s)| expr(s, depth, &format!("{path}[{i}]")))
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(format!("T.tuple({{ {} }})", exprs.join(", ")))
         }
         Schema::Ref(name) => Ok(format!("T.ref({})", lua_string(name))),
         Schema::Object(fields) => shape_expr(fields, depth, path),
@@ -209,9 +221,7 @@ fn shape_expr(fields: &[Field], depth: usize, path: &str) -> Result<String, Lsha
         } else {
             expr(&field.schema, depth + 1, &field_path)?
         };
-        if let Some(doc) = constraints_doc(field) {
-            value.push_str(&format!(":describe({})", lua_string(&doc)));
-        }
+        value.push_str(&bounds_suffix(field));
         if !field.required && !value.ends_with(":is_optional()") {
             value.push_str(":is_optional()");
         }
@@ -229,29 +239,25 @@ fn one_of_expr(values: &[String]) -> String {
     format!("T.one_of({{ {} }})", quoted.join(", "))
 }
 
-/// Numeric / length constraints have no lshape combinator; keep them as doc
-/// text so the generated schema stays self-describing (KNOWN LIMITATION:
-/// not enforced at check time).
-fn constraints_doc(field: &Field) -> Option<String> {
+/// Numeric / length constraints map to lshape's bounds combinators
+/// (lshape 0.3+): chained calls merge into a single `bounded` wrapper and
+/// are enforced at check time.
+fn bounds_suffix(field: &Field) -> String {
     let c = &field.constraints;
-    let mut parts = Vec::new();
+    let mut out = String::new();
     if let Some(min) = c.min {
-        parts.push(format!("min={min}"));
+        out.push_str(&format!(":min({min})"));
     }
     if let Some(max) = c.max {
-        parts.push(format!("max={max}"));
+        out.push_str(&format!(":max({max})"));
     }
     if let Some(min_len) = c.min_len {
-        parts.push(format!("min_len={min_len}"));
+        out.push_str(&format!(":min_len({min_len})"));
     }
     if let Some(max_len) = c.max_len {
-        parts.push(format!("max_len={max_len}"));
+        out.push_str(&format!(":max_len({max_len})"));
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts.join(" "))
-    }
+    out
 }
 
 const LUA_RESERVED: &[&str] = &[
@@ -312,8 +318,8 @@ mod tests {
     }
 
     #[test]
-    fn integer_lowers_to_number() {
-        assert_eq!(schema_to_lshape(&Schema::Integer).unwrap(), "T.number");
+    fn integer_maps_to_t_integer() {
+        assert_eq!(schema_to_lshape(&Schema::Integer).unwrap(), "T.integer");
     }
 
     #[test]
@@ -336,7 +342,7 @@ mod tests {
         };
         assert_eq!(
             schema_to_lshape(&record).unwrap(),
-            "T.map_of(T.string, T.number)"
+            "T.map_of(T.string, T.integer)"
         );
     }
 
@@ -383,11 +389,19 @@ mod tests {
     }
 
     #[test]
-    fn tuple_lowers_to_described_table() {
+    fn tuple_maps_to_t_tuple() {
         let schema = Schema::Tuple(vec![Schema::String, Schema::Integer]);
         assert_eq!(
             schema_to_lshape(&schema).unwrap(),
-            r#"T.table:describe("tuple: [string, integer]")"#
+            "T.tuple({ T.string, T.integer })"
+        );
+    }
+
+    #[test]
+    fn empty_tuple_is_an_error() {
+        assert_eq!(
+            schema_to_lshape(&Schema::Tuple(vec![])),
+            Err(LshapeError::EmptyTuple { path: "$".into() })
         );
     }
 
@@ -423,7 +437,7 @@ mod tests {
     }
 
     #[test]
-    fn field_constraints_become_describe() {
+    fn field_constraints_become_bounds() {
         let schema = Schema::Object(vec![field_with(
             "age",
             Schema::Integer,
@@ -433,7 +447,22 @@ mod tests {
                 ..Default::default()
             },
         )]);
-        let expected = "T.shape({\n    age = T.number:describe(\"min=0 max=150\"),\n})";
+        let expected = "T.shape({\n    age = T.integer:min(0):max(150),\n})";
+        assert_eq!(schema_to_lshape(&schema).unwrap(), expected);
+    }
+
+    #[test]
+    fn field_length_constraints_become_len_bounds() {
+        let schema = Schema::Object(vec![field_with(
+            "name",
+            Schema::String,
+            Constraints {
+                min_len: Some(1),
+                max_len: Some(64),
+                ..Default::default()
+            },
+        )]);
+        let expected = "T.shape({\n    name = T.string:min_len(1):max_len(64),\n})";
         assert_eq!(schema_to_lshape(&schema).unwrap(), expected);
     }
 

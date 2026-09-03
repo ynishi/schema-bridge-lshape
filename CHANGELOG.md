@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-09-03
+
+Tightens the three lossy mappings of 0.1.0 — lshape 0.3.0 added the
+missing combinators (`T.integer` / `T.tuple` / bounds), so the exporter
+now emits real checks instead of `:describe(...)` doc text. Generated
+modules require lshape 0.3.0+ at load time (mlua-lshape 0.3+).
+
+### Changed
+
+- `Integer` → `T.integer` (was `T.number`); whole-number check enforced.
+- `Tuple(items)` → `T.tuple({...})` with per-position schemas (was
+  `T.table` + doc text); an empty tuple is now a mapping error
+  (`LshapeError::EmptyTuple`, unreachable via the derive macro).
+- `Constraints` `min` / `max` / `min_len` / `max_len` →
+  `:min(..)` / `:max(..)` / `:min_len(..)` / `:max_len(..)` bounds
+  chain (was `:describe(...)`); enforced at check time.
+- dev-dependency `mlua-lshape` 0.1 → 0.3; round-trip tests now exercise
+  the enforcement paths (fractional integer, out-of-bounds values,
+  short / long / mistyped tuples) against the real Lua VM.
+
 ## [0.1.0] - 2026-09-03
 
 Initial public release. Bridge crate that turns the
