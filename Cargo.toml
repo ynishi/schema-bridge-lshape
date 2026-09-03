@@ -1,0 +1,20 @@
+[package]
+name = "schema-bridge-lshape"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+authors = ["Yutaka Nishimura"]
+license = "MIT OR Apache-2.0"
+description = "lshape exporter for schema-bridge — generates lshape (Lua Schema-as-Data) type definitions from schema-bridge's Schema IR"
+repository = "https://github.com/ynishi/schema-bridge-lshape"
+homepage = "https://github.com/ynishi/schema-bridge-lshape"
+documentation = "https://docs.rs/schema-bridge-lshape"
+readme = "README.md"
+
+[dependencies]
+schema-bridge-core = "0.4"
+
+[dev-dependencies]
+schema-bridge = "0.4"
+mlua-lshape = "0.1"
+mlua = { version = "0.11", features = ["lua54", "vendored", "send"] }
